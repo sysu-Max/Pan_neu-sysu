@@ -1,0 +1,156 @@
+library(Seurat)##Seurat V4.1.1 was used
+library(Matrix)
+library(stringr)
+library(ggplot2)
+library(dplyr)
+library(parallel)
+library(stringi)
+library(plyr)
+library(ggthemes)
+library(cowplot)
+library(data.table)
+library(RColorBrewer)
+library(ComplexHeatmap)
+library(pheatmap)
+library(reshape2)
+library(scales)
+library(rlang)
+library(future)
+library(ggsci)
+library(SoupX)
+library(harmony)
+library(patchwork)
+library(scales)
+library(tidyverse)
+library(ggpubr)
+library(viridis)
+library(ghibli)
+library(monocle3)
+library(ghibli)
+library(monocle3)
+library(DoubletFinder)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+
+##------optional------parallel environment seting--cores = 10, memory = 100G----##
+options(future.globals.maxSize = 10*1000 * 1024^2)
+plan("multiprocess", workers = 10)
+
+color_used <- c(pal_npg()(10),pal_igv()(9),pal_uchicago("light")(9),pal_futurama()(12), pal_aaas()(10))[-8]
+
+###-----------------------1). the first clustering-----------------------####
+ags <- commandArgs(trailingOnly = T)
+setwd('~')
+print(ags[1])
+##------------------------2). Read in all input expression matrices
+TenXdat <- Read10X(data.dir = str_glue('~/{ags[1]}/outs/filtered_feature_bc_matrix/'))
+TenXdat <- CreateSeuratObject(counts = TenXdat, project = ags[1], min.cells = 0, min.features = 1)
+
+
+##------------------------3).cells quality filtering
+mito.features <- grep(pattern = "^MT-", x = rownames(x = TenXdat), value = TRUE) 
+percent.mito <- Matrix::colSums(x = GetAssayData(object = TenXdat, 
+                                                 slot = 'counts')[mito.features, ]) / Matrix::colSums(x = GetAssayData(object = TenXdat, slot = 'counts')) 
+
+TenXdat[["percent.mito"]] <- percent.mito 
+
+TenXdat <- subset(x = TenXdat, subset = nFeature_RNA >= 100 & percent.mito <= 0.25) 
+TenXdat <- NormalizeData(object = TenXdat, normalization.method = "LogNormalize", scale.factor = 1e4) 
+TenXdat <- FindVariableFeatures(object = TenXdat, nfeatures = 2000) 
+TenXdat <- ScaleData(object = TenXdat, features = rownames(x = TenXdat), vars.to.regress = c("nCount_RNA")) 
+TenXdat <- RunPCA(object = TenXdat, features = VariableFeatures(object = TenXdat), verbose = FALSE) 
+
+##------------------------4). dims and resulations used
+subset_cells <- TenXdat
+
+dim.use <- 30
+res.use <- 1
+
+subset_cells <- FindNeighbors(object = subset_cells, dims = 1:dim.use)
+subset_cells <- FindClusters(object = subset_cells, resolution = res.use)
+
+##------------------------5). Run the UMAP
+subset_cells <- RunUMAP(object = subset_cells, dims = 1:dim.use, umap.method = "uwot")
+
+##------------------------## plot the first run tSNE
+png(paste0(ags, "_", dim.use, "_", res.use, "_First_Run_UMAP.png"), height = 8, width = 10, units = 'in',res = 300)
+DimPlot(object = subset_cells, reduction = 'umap', label = TRUE, cols = color_used)
+dev.off()
+
+write.table(data.frame(Tissue = ags[1], genes = dim(subset_cells@assays$RNA@data)[1], cells = dim(subset_cells@assays$RNA@data)[2]),
+            file = paste0(ags[1], "_before_dobuletfinder.txt"),
+            sep = "\t", row.names = F, quote = F)
+
+##------------------------2.doublet finder processing---------------------------------------------------------------------
+sweep.res.list <- paramSweep_v3(subset_cells, PCs = subset_cells@commands$FindNeighbors.RNA.pca$dims)
+sweep.stats <- summarizeSweep(sweep.res.list, GT = FALSE)
+bcmvn <- find.pK(sweep.stats)
+pK <- bcmvn[which(max(bcmvn$BCmetric) == bcmvn$BCmetric),2] %>% as.character %>% as.numeric
+
+##------------------------1). Homotypic Doublet Proportion Estimate -------------------------------------------------------------------------------------
+homotypic.prop <- modelHomotypic(subset_cells@active.ident) 
+nExp_poi <- round(0.07*length(colnames(subset_cells))) 
+nExp_poi.adj <- round(nExp_poi*(1-homotypic.prop)) 
+
+##------------------------2). Run DoubletFinder with varying classification stringencies ----------------------------------------------------------------
+subset_cells <- doubletFinder_v3(subset_cells, PCs = subset_cells@commands$FindNeighbors.RNA.pca$dims, pN = 0.25, pK = pK, nExp = nExp_poi, reuse.pANN = FALSE)
+subset_cells <- doubletFinder_v3(subset_cells, PCs = subset_cells@commands$FindNeighbors.RNA.pca$dims, pN = 0.25, pK = pK, nExp = nExp_poi.adj, reuse.pANN = grep("pANN", names(subset_cells@meta.data), value = T))
+
+##------------------------3). Plot results --------------------------------------------------------------------------------------------------------------
+high_of_low <- (subset_cells@meta.data[, grep("^DF\\.classifications", names(subset_cells@meta.data), value = T)] == "Singlet")+0
+subset_cells@meta.data[high_of_low[, 1] + high_of_low[, 2] == 2, "DF_hi.lo"] <- "Singlet"
+subset_cells@meta.data[high_of_low[, 1] + high_of_low[, 2] == 1, "DF_hi.lo"] <- "Doublet_lo"
+subset_cells@meta.data[high_of_low[, 1] + high_of_low[, 2] == 0, "DF_hi.lo"] <- "Doublet_hi"
+
+##------------------------3.remove the doublets and recluster-----------------#######
+subset_cells <- subset_cells[, subset_cells@meta.data[grepl(subset_cells$DF_hi.lo, pattern = "Singlet"), ] %>% row.names()]
+
+##------------------------. recluster-----------------#######
+subset_cells <- NormalizeData(object = subset_cells, normalization.method = "LogNormalize", scale.factor = 1e4)
+subset_cells <- FindVariableFeatures(object = subset_cells, selection.method = 'vst', nfeatures = 2000)
+subset_cells <- ScaleData(object = subset_cells, features = rownames(x = subset_cells), vars.to.regress = c( "percent.mito"))
+
+subset_cells <- RunPCA(object = subset_cells, features = VariableFeatures(object = subset_cells), verbose = FALSE)
+
+subset_cells <- FindNeighbors(object = subset_cells, dims = 1:dim.use)
+subset_cells <- FindClusters(object = subset_cells, resolution = res.use)
+
+##------------------------ Run the umap
+subset_cells <- RunUMAP(object = subset_cells, dims = 1:dim.use, umap.method = "uwot")
+
+##------------------------ plot the umap
+png(paste0(ags, "_", dim.use, "_", res.use, "_doublets_removed_umap.png"), height = 8, width = 10, units = 'in',res = 300)
+DimPlot(object = subset_cells, reduction = 'umap', label = TRUE, cols = color_used)
+dev.off()
+
+write.table(data.frame(Tissue = ags, genes = dim(subset_cells@assays$RNA@data)[1], cells = dim(subset_cells@assays$RNA@data)[2]),
+            file = paste0(ags[1], "_after_dobuletfinder.txt"),
+            sep = "\t", row.names = F, quote = F)
+
+
+##------------------------ SoupX
+
+sc <-  SoupChannel(subset_cells@assays$RNA@counts, 
+                   subset_cells@assays$RNA@counts, calcSoupProfile = FALSE)
+
+toc <-  sc$toc
+soupProf <-  data.frame(row.names = rownames(toc), est = rowSums(toc)/sum(toc), counts = rowSums(toc))
+sc <- setSoupProfile(sc, soupProf)
+
+sc <-  setClusters(sc, subset_cells$seurat_clusters %>% as.character %>% as.numeric())
+
+sc <-  autoEstCont(sc)
+out <-  adjustCounts(sc)
+
+subset_cells@assays$RNA@counts <- round(out)
+subset_cells <- subset(x = subset_cells, subset = nFeature_RNA >= 100 & percent.mito <= 0.25)
+subset_cells <- NormalizeData(object = subset_cells, normalization.method = "LogNormalize", scale.factor = 1e4)
+subset_cells <- FindVariableFeatures(object = subset_cells, nfeatures = 2000)
+subset_cells <- ScaleData(object = subset_cells, features = rownames(x = subset_cells), vars.to.regress = c("nCount_RNA"))
+
+subset_cells[["Sample_ID"]] <- ags[1]
+assign(ags[1], subset_cells)
+
+save(list = ags[1], file = paste0("~/QC_", ags[1], ".RData"))
+
+
