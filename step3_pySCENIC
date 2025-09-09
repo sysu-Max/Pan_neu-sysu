@@ -1,0 +1,64 @@
+import loompy as lp
+import numpy as np
+import scanpy as sc
+
+x = sc.read_csv("~/project/pan_neu/2.analysis/4.merge_analysis/neu/analysis_v9/scenic_new/sce_count.csv");
+row_attrs = {"Gene": np.array(x.var_names),};
+col_attrs = {"CellID": np.array(x.obs_names)};
+lp.create("sce_count.loom",x.X.transpose(),row_attrs,col_attrs)
+
+
+
+f_ex_loom=~/project/pan_neu/2.analysis/4.merge_analysis/neu/analysis_v9/scenic_new/sce_count.loom
+
+##  ----  Run pySCENIC
+## expression matrix
+f_ex_matrix_csv=~/project/pan_neu/2.analysis/4.merge_analysis/neu/analysis_v9/scenic_new/sce_count.csv
+
+## referrence databases
+f_db_names=$(ls ~/Documents/pyscenic_2/*feather | tr "\n" " ")
+f_motif_path=~/Documents/pyscenic_2/motifs-v10nr_clust-nr.hgnc-m0.001-o0.0.tbl
+f_tfs=~/Documents/pyscenic_2/allTFs_hg38.txt
+
+##--------------------Step 1: GENIE3
+pyscenic grn \
+--output adjusted.tsv \
+--method grnboost2 \
+--transpose \
+${f_ex_loom} \
+${f_tfs} \
+--num_workers 48
+
+##--------------------Step 2: cistarget
+pyscenic ctx adjusted.tsv \
+${f_db_names} \
+--annotations_fname ${f_motif_path} \
+--expression_mtx_fname ${f_ex_loom} \
+--transpose \
+--output sce_regulon.gmt \
+--mask_dropouts \
+--mode "dask_multiprocessing" \
+--num_workers 40
+
+###--------------------Step 3: aucell
+pyscenic aucell \
+${f_ex_loom} \
+sce_regulon.gmt \
+--transpose \
+--output sce_regulon_AUC.csv \
+--num_workers 48
+
+
+# 
+f_ex_loom=~/project/pan_neu/2.analysis/4.merge_analysis/neu/analysis_v9/scenic_new/sce_count.loom
+
+pyscenic aucell \
+${f_ex_loom} \
+sce_regulon.gmt \
+--transpose \
+--output sce_regulon_AUC.loom \
+--num_workers 48
+
+
+
+
