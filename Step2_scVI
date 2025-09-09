@@ -1,0 +1,101 @@
+library(Seurat)##Seurat V4.1.1 was used
+library(Matrix)
+library(stringr)
+library(ggplot2)
+library(dplyr)
+library(parallel)
+library(stringi)
+library(plyr)
+library(ggthemes)
+library(cowplot)
+library(data.table)
+library(RColorBrewer)
+library(ComplexHeatmap)
+library(pheatmap)
+library(reshape2)
+library(scales)
+library(rlang)
+library(future)
+library(ggsci)
+library(SoupX)
+library(harmony)
+library(patchwork)
+library(scales)
+library(tidyverse)
+library(ggpubr)
+library(viridis)
+library(ghibli)
+library(monocle3)
+library(CytoTRACE)
+# library(clusterProfiler)
+library(ghibli)
+library(monocle3)
+library(reticulate)
+library(org.Hs.eg.db)
+library(sceasy)
+
+
+id_meta <- c('orig.ident',  'nCount_RNA','nFeature_RNA', 'sample_ID', 'Tumor', 'tissue', 'dataset' ,'Dataset', 'first_annotation')
+
+color_UMAP <- c('#4e7aa7', '#b17aa1',  '#76b7b1',  '#f59ba7', '#59a14d', '#9b7560', '#eec947', '#e2575a', '#f18e28', "#7d75a8", 
+                "#E64B35FF", "#278B9AFF", "#5A6F80FF", "#E8C4A2FF",  "#DE7862FF", "#D8AF39FF","#4C413FFF", 
+                "#bf677d",  "#d9a08c","#6e3d5d", "#4d4c98",  "#b09ac8", "#ce8149", "#8f8f8d", "#bcd480", "#b5513a", 
+                '#e21c20','#3b7fb6','#58bb21','#9656a7', '#fe8136', '#fdfe30','#a85a28','#fa84be','#9a9a9a', 
+                "#4DBBD5FF", "#00A087FF", "#3C5488FF", "#F39B7FFF", "#8491B4FF",  "#91D1C2FF", "#7E6148FF", "#B09C85FF" 
+)
+
+color_used <- c(pal_npg()(10)[c(-10)],pal_igv()(9)[c(-1,-2,-7)],
+                pal_uchicago("light")(9)[-6],pal_futurama()(12)[c(-3,-5)], pal_aaas()(10)[c(-2)])
+cell_marker_1 <- read.csv('~/HCA2.0/1.code/cellmarker.csv', header = T) %>%  `[`(1:3) %>% unique()
+source(file = '~/HCA2.0/1.code/02functions_forannotation.r')
+
+use_python("~/miniconda3/envs/HCA/bin/python3")
+options(width = 250)
+anndata <- import("anndata",convert = FALSE)
+bbknn <- import("bbknn", convert = FALSE)
+sc <- import("scanpy",convert = FALSE)
+scvi <- import("scvi", convert = FALSE)
+
+####-----Converting Seurat object to AnnData-----
+setwd('~/Project/pan_neu/2.analysis/4.merge_analysis/neu/scVI')
+load(file = '~/Project/pan_neu/2.analysis/4.merge_analysis/Neu_part_1/neu_merge.RData')
+
+
+# 标准分析流程 
+neu_merge_2 <- neu_merge %>%  FindVariableFeatures(selection.method = "vst", nfeatures = 2000)
+top2000 <- head(VariableFeatures(neu_merge_2), 2000)
+neu_merge_2 <- neu_merge_2[top2000]
+
+# 将seurat转为AnnData
+annadata_v8 <- convertFormat(neu_merge_2, from="seurat", to="anndata", main_layer="counts", drop_single_values=FALSE)
+
+# run setup_anndata, use column sample_ID for batch
+scvi$model$SCVI$setup_anndata(annadata_v8, batch_key = 'sample_ID')
+
+# create the model
+model = scvi$model$SCVI(annadata_v8)
+
+# train the model
+model$train()
+
+# to specify the number of epochs when training:
+# model$train(max_epochs = as.integer(400))
+
+# get the latent represenation
+latent = model$get_latent_representation()
+
+# put it back in our original Seurat object
+latent <- as.matrix(latent)
+rownames(latent) = colnames(neu_merge)
+colnames(latent) <- c(paste0('SCVI_', 1:10))
+neu_merge[["scvi"]] <- CreateDimReducObject(embeddings = latent,
+                                               key = "scvi_", 
+                                               assay = DefaultAssay(neu_merge))
+neu_merge <- RunUMAP(neu_merge, dims = 1:10, reduction = "scvi", n.components = 2)
+
+neu_merge <- FindNeighbors(neu_merge, dims = 1:10, reduction = "scvi")
+neu_merge <- FindClusters(neu_merge, resolution = 1)
+
+
+
+####
