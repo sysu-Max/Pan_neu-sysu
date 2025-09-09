@@ -1,0 +1,111 @@
+library(CellChat)
+library(patchwork)
+library(Seurat)
+library(Matrix)
+library(gridExtra)
+library(ggplot2)
+library(stringi)
+library(ggthemes)
+library(cowplot)
+library(RColorBrewer)
+library(pheatmap)
+library(reshape2)
+library(scales)
+library(future)
+library(parallel)
+library(ggsci)
+library(patchwork)
+library(ROCR)
+library(ggvenn)
+library(cowplot)
+library(tidyverse)
+library(ggpubr)
+
+setwd('~/Project/pan_neu/2.analysis/4.merge_analysis/neu/analysis_v9/cellchat')
+
+## sample_2000
+load(file = '~/Project/pan_neu/2.analysis/4.merge_analysis/neu/analysis_v9/cellchat/TNK_sample_1000.RData')
+load(file = '~/Project/pan_neu/2.analysis/4.merge_analysis/neu/analysis_v9/cellchat/B_sample_1000.RData')
+load(file = '~/Project/pan_neu/2.analysis/4.merge_analysis/neu/analysis_v9/cellchat/mye_sample_1000.RData')
+load(file = '~/Project/pan_neu/2.analysis/4.merge_analysis/neu/analysis_v9/cellchat/non_sample_1000.RData')
+load(file = '~/Project/pan_neu/2.analysis/4.merge_analysis/neu/analysis_v9/cellchat/neu_sample_1000.RData')
+
+##-------- part.1 ----
+## Prepare input data for CelChat analysis
+merge_1000 <- merge(B_sample_1000, list(mye_sample_1000, neu_sample_1000, non_sample_1000, TNK_sample_1000))
+
+data.input  <- merge_1000@assays$RNA@data %>% as.matrix()
+meta <-  data.frame(labels = merge_1000$first_annotation, row.names = colnames(data.input)) # manually create a dataframe consisting of the cell labels
+
+# create cellchat data
+cellchat <- createCellChat(object = data.input, meta = meta, group.by = "labels")
+
+
+CellChatDB <- CellChatDB.human # use CellChatDB.mouse if running on mouse data
+# use a subset of CellChatDB for cell-cell communication analysis
+CellChatDB.use <- subsetDB(CellChatDB, search = "Secreted Signaling") # use Secreted Signaling
+# use all CellChatDB for cell-cell communication analysis
+# CellChatDB.use <- CellChatDB # simply use the default CellChatDB
+
+# set the used database in the object
+cellchat@DB <- CellChatDB.use
+
+cellchat <- subsetData(cellchat) # subset the expression data of signaling genes for saving computation cost
+future::plan("multiprocess", workers = 16) # do parallel
+cellchat <- identifyOverExpressedGenes(cellchat)
+cellchat <- identifyOverExpressedInteractions(cellchat)
+
+##-------- part.2 ----
+cellchat <- computeCommunProb(cellchat, raw.use = TRUE)
+# Filter out the cell-cell communication if there are only few number of cells in certain cell groups
+cellchat <- filterCommunication(cellchat, min.cells = 10)
+
+cellchat <- computeCommunProbPathway(cellchat)
+cellchat <- aggregateNet(cellchat)
+
+groupSize <- as.numeric(table(cellchat@idents ))
+par(mfrow = c(1,2), xpd=TRUE)
+png('merge_cellchat_number.png', height =20, width = 20, res = 100, units = 'in')
+netVisual_circle(cellchat@net$weight, vertex.weight = groupSize, weight.scale = T, label.edge= F, title.name = "Interaction weights/strength")
+dev.off()
+
+# show all the significant interactions (L-R pairs)
+levels(cellchat@idents)  
+pt <-  netVisual_bubble(cellchat, sources.use = c(47,49,50,34,36,40), targets.use = c(14:20), remove.isolate = FALSE)
+pn <-  netVisual_bubble(cellchat, sources.use = c(43,44,47),  targets.use = c(14:20), remove.isolate = FALSE)
+p1 <- plot_grid(pt, pn, ncol = 1, align = 'l')
+ggsave("Normal_Tomor_neu_to_CD8_cellchat_dotplot.pdf", p1, width = 8, height = 6) #
+
+
+pt <-  netVisual_bubble(cellchat, sources.use = c(47,49,50,34,36,40),  targets.use = c(7:13), remove.isolate = FALSE)
+pn <-  netVisual_bubble(cellchat, sources.use = c(43,44,47),  targets.use = c(7:13), remove.isolate = FALSE)
+p1 <- plot_grid(pt, pn, ncol = 1, align = 'l')
+ggsave("Normal_Tomor_neu_to_CD4_cellchat_dotplot.pdf", p1, width = 8, height = 6) #
+
+
+pt <-  netVisual_bubble(cellchat, sources.use = c(47,49,50,34,36,40),  targets.use = c(51:54), remove.isolate = FALSE)
+pn <-  netVisual_bubble(cellchat, sources.use = c(43,44,47),  targets.use = c(51:54), remove.isolate = FALSE)
+p1 <- plot_grid(pt, pn, ncol = 1, align = 'l')
+ggsave("Normal_Tomor_neu_to_NK_cellchat_dotplot.pdf", p1, width = 8, height = 6) #
+
+
+pt <-  netVisual_bubble(cellchat, sources.use = c(47,49,50,34,36,40),  targets.use = c(3,21:24,28:31), remove.isolate = FALSE)
+pn <-  netVisual_bubble(cellchat, sources.use = c(43,44,47),  targets.use = c(3,21:24,28:31), remove.isolate = FALSE)
+p1 <- plot_grid(pt, pn, ncol = 1, align = 'l', rel_heights = c(1.2,1))
+ggsave("Normal_Tomor_neu_to_mye_cellchat_dotplot.pdf", p1, width = 8, height = 8) #
+
+
+pt <-  netVisual_bubble(cellchat, sources.use = c(47,49,50,34,36,40),  targets.use = c(1,2,27,55), remove.isolate = FALSE)
+pn <-  netVisual_bubble(cellchat, sources.use = c(43,44,47),  targets.use = c(1,2,27,55), remove.isolate = FALSE)
+p1 <- plot_grid(pt, pn, ncol = 1, align = 'l')
+ggsave("Normal_Tomor_neu_to_B_cellchat_dotplot.pdf", p1, width = 6, height = 6) #
+
+
+pt <-  netVisual_bubble(cellchat, sources.use = c(47,49,50,34,36,40),  targets.use = c(4:6,25,26), remove.isolate = FALSE)
+pn <-  netVisual_bubble(cellchat, sources.use = c(43,44,47),  targets.use = c(4:6,25,26), remove.isolate = FALSE)
+p1 <- plot_grid(pt, pn, ncol = 1, align = 'l', rel_heights = c(1.2,1))
+ggsave("Normal_Tomor_neu_to_nonimmmune_cellchat_dotplot.pdf", p1, width = 7, height = 7) #
+
+
+save(cellchat, file = '~/Project/pan_neu/2.analysis/4.merge_analysis/neu/analysis_v9/cellchat/cellchat.RData')
+
