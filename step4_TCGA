@@ -1,0 +1,81 @@
+library(survival)
+library("survminer")
+library(ROCR)
+library(cutoff)
+library(pROC)
+
+ZScore <- function(x){
+  return((x - mean(x)) / sd(x))
+}
+
+
+file_wd <- '~/project/pan_neu/2.analysis/4.merge_analysis/neu/analysis_v9/TCGA'
+cancer_list <- c('GBM', 'LUAD', 'PRAD', 'LIHC', 'PAAD', 'LGG', 'READ', 'ESCA', 'COAD', 'LUSC', 'STAD')
+
+
+for (i in 1:11){
+  i_cancer <- cancer_list[i]
+  cancer_type <- str_glue("TCGA-{i_cancer}")
+  load(file = str_glue('{file_wd}/{cancer_type}_tpm.RData'))
+  load(file = str_glue('{file_wd}/{cancer_type}_counts.RData'))
+  load(file = str_glue('{file_wd}/{cancer_type}_clinical.RData'))
+  load(file = str_glue('{file_wd}/{cancer_type}_rowdata.RData'))
+  load(file = str_glue('{file_wd}/{cancer_type}_coldata.RData'))
+  
+  
+  #1、
+  tpm_data %>% rownames() %>% head
+  rowdata <- rowdata %>% as.data.frame.array() %>% distinct(gene_name, .keep_all = T) 
+  tpm_data <- tpm_data[rowdata$gene_id, ]
+  rownames(tpm_data) <- rowdata$gene_name
+  
+  tpm_data_z <- apply(tpm_data, 1, ZScore) 
+  tpm_data_z <- tpm_data_z %>% t()
+  tpm_data_z[1:4,1:4]
+  Degs_neu <- openxlsx::read.xlsx(xlsxFile = '~/project/pan_neu/2.analysis/4.merge_analysis/neu/analysis_v9/DEGs.xlsx', sheet = 2)
+  Degs_neu <- Degs_neu %>% filter(avg_log2FC > 1 & ratio > 2 )
+  Degs_neu <- Degs_neu[Degs_neu$gene %in% rownames(tpm_data_z), 'gene']
+  high_score <- tpm_data_z[Degs_neu, ] %>% colSums %>% as.numeric() %>% data.frame()
+  rownames(high_score) <- colnames(tpm_data_z)
+  
+  #
+  patient_dat <- colnames(tpm_data_z) %>% str_split_fixed(pattern = '-', n = 5) %>% as.data.frame.array()
+  patient_dat$high_score <- high_score$`.`
+  patient_dat$V6 <- patient_dat$V4 %>% gsub(pattern = 'A', replacement = '') %>% 
+    gsub(pattern = 'B', replacement = '00')%>% as.numeric() 
+  patient_dat$sample_id <- colnames(tpm_data_z)
+  table(patient_dat$V4)
+  patient_dat <- patient_dat[patient_dat$V6 %in% 1, ]
+  patient_dat$barcode <- paste(patient_dat$V1, patient_dat$V2, patient_dat$V3, sep = '-')
+  
+  
+  #2、
+  clinical$days_to_death[is.na(clinical$days_to_death)] <- 0   
+  clinical$days_to_last_follow_up[is.na(clinical$days_to_last_follow_up)] <- 0
+  
+  sur_dat <- clinical[, c('days_to_death', 'days_to_last_follow_up', 'vital_status', 'submitter_id')]
+  sur_dat$sur_mon <- apply(sur_dat[, c('days_to_death', 'days_to_last_follow_up')], 1, max) 
+  sur_dat <- sur_dat[sur_dat$vital_status %in% c("Alive", "Dead"),]
+  sur_dat$event <- ifelse(sur_dat$vital_status=='Alive',0,1)
+  sur_dat$tim <- round(sur_dat$sur_mon/30,2)
+  sur_dat <- sur_dat[sur_dat$submitter_id %in% patient_dat$barcode, ]
+  
+  sur_dat$high_score <- patient_dat[match(sur_dat$submitter_id, patient_dat$barcode), 'high_score']
+  sur_dat$high_score <- sur_dat$high_score %>% as.numeric()
+  
+  
+  #3、
+  rocobj <- roc(sur_dat$event, sur_dat$high_score)
+  coords.modult <- coords(rocobj, "b", ret=c("threshold", "specificity", "sensitivity"),
+                          as.list = FALSE, drop = TRUE, best.method = c("closest.topleft"))
+  
+  
+  cut_off <- coords.modult$threshold %>% round(5)
+  sur_dat$group <- ifelse(sur_dat$high_score > coords.modult$threshold,'high', 'low')
+  
+  kmfit <- survfit(Surv(tim, event)~group, data=sur_dat) 
+  p1 <- ggsurvplot(kmfit, conf.int=F, pval=TRUE,xlab ="Time in months", palette =  c("#F39B7FFF", "#8491B4FF"))+ggtitle(str_glue('{cancer_type}'))
+  ggsave(str_glue('{cancer_type}_as_KM.pdf'), p1$plot, height = 4, width = 4, device = 'pdf')
+  
+  print(str_glue('{cancer_type}  is OK!!!'))
+}
