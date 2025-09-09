@@ -1,0 +1,74 @@
+import cellrank
+import pandas
+import anndata
+import os
+import sys
+import pandas as pd
+import loompy
+from scipy import io
+from scipy.sparse import coo_matrix, csr_matrix
+import numpy as np
+import scvelo as scv
+import IPython
+from sklearn.model_selection import train_test_split
+from collections import Counter
+import bbknn
+import scvi
+import scanpy as sc
+
+
+IPython.core.interactiveshell.InteractiveShell.ast_node_interactivity = "all"
+os.chdir('~/Project/Pan_neu/2.analysis/5.velo_an/input_loom')
+
+##---------scvelo---------------------------------------
+
+# 1.load
+adata_02 = sc.read_h5ad('~/project/pan_neu/scvelo/analysis_1/adata_02.h5ad')
+
+
+# 2.pre-process
+scv.pp.filter_and_normalize(adata_02,  n_top_genes  = 2000) # ntop_genes 可以调整，默认2000
+scv.pp.moments(adata_02,n_pcs=20, n_neighbors=20)  # dims 可以调整
+# scv.tl.umap(adata_05)
+
+
+# 3.compute velocity
+scv.tl.velocity(adata_02) # default: stochastic; mode='deterministic'
+scv.tl.velocity_graph(adata_02, n_jobs =48)
+
+
+# scv.pl.velocity_embedding(adata_01, basis='umap', color='Detail_Annotation_final', save='0.1_embedding_v2.png')
+scv.pl.velocity_embedding_grid(adata_02, basis='umap',  size=15, scale=2, arrow_size=2, arrow_length=2.5, 
+                               color='first_annotation', save='annotation.png', 
+                               add_outline = False, legend_fontsize = 4,
+                               palette={'Neu-c7-AOAH': '#eec947', 'Neu-c13-RHOH': '#5A6F80FF', 'Neu-c9-MIF': '#f18e28', 
+                               'Neu-c8-HSPA1B': '#e2575a', 'Neu-c11-CCL4L2': '#E64B35FF', 
+                               'Neu-c2-ELL2': '#b17aa1', 'Neu-c4-IFITM1': '#f59ba7', 
+                               'Neu-c1-CXCR2': '#4e7aa7', 'Neu-c5-APOC1': '#59a14d', 'Neu-c3-IER2': '#76b7b1', 
+                               'Neu-c6-CD177': '#9b7560', 'Neu-c17-HLA-DRA': '#4C413FFF'} ,
+                               figsize  = (6,6),dpi = 600)
+
+scv.pl.velocity_embedding_grid(adata_02, basis='umap',  scale=2, arrow_size=2,  arrow_length=2.5, 
+                               color='normal_vs_tumor2', save='tissue.png', 
+                               add_outline = False,size = 15,legend_fontsize = 4, 
+                               palette={'Tumor Blood': '#6e3d5d', 'Paracancerous': '#91D1C2DC', 'Tumor': '#b5513a'} ,
+                               legend_loc='on data',
+                               figsize  = (6,6),dpi = 600)
+
+
+scv.pl.velocity_embedding_stream(adata_02, basis='umap', color=['normal_vs_tumor2'], save='stream.png', 
+                                 max_length = 1,linewidth = 1,title = "",outline_width = (0.1,0.1),
+                                 size = 15,legend_fontsize = 4,dpi = 300)
+
+
+scv.tl.velocity_pseudotime(adata_02)
+scv.pl.scatter(adata_02, color='velocity_pseudotime', cmap='gnuplot', size = 15, save='embedding.pdf')
+
+adata_02.obs[['velocity_pseudotime']].to_csv('pseudotime.csv')
+
+scv.tl.paga(adata_02, groups = 'normal_vs_tumor2')
+df = scv.get_df(adata_02, 'paga/transitions_confidence', precision = 2).T
+df.style.background_gradient(cmap = 'Blues').format('{:.2g}')
+
+scv.pl.paga(adata_02, basis='umap', size=15, alpha=.5, save='PAGA.pdf', min_edge_width=2, node_size_scale=1.5)
+
