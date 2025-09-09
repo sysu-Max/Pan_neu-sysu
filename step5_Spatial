@@ -1,0 +1,119 @@
+library(Seurat)##Seurat V4.1.1 was used
+library(Matrix)
+library(ggplot2)
+library(parallel)
+library(ggthemes)
+library(cowplot)
+library(data.table)
+library(RColorBrewer)
+library(ComplexHeatmap)
+library(pheatmap)
+library(reshape2)
+library(rlang)
+library(future)
+library(ggsci)
+library(SoupX)
+library(harmony)
+library(patchwork)
+library(scales)
+library(tidyverse)
+library(ggpubr)
+library(viridis)
+# library(CytoTRACE)
+library(clusterProfiler)
+library(ghibli)
+library(monocle3)
+library(reticulate)
+library(sceasy)
+library("Nebulosa")
+library(enrichplot)
+library(org.Hs.eg.db)
+library(tidyverse)
+library('GSVA')
+library("limma")
+library(GSEABase)
+library(miloR)
+library(SCENIC)
+library(AUCell)
+library(GENIE3)
+library(RcisTarget)
+library(hdf5r)
+library(SeuratDisk)
+
+# ---- signitaure ----
+infla_list <- list()
+gmt_dat <- getGmt("~/Project/pan_neu/2.analysis/4.merge_analysis/neu/analysis_v9/part_2/ANGIOGENESIS.v2023.2.Hs_0001525.gmt")
+infla_list <- list()
+infla_list[[1]] <- gmt_dat[[1]]@geneIds
+
+
+Degs_neu <- openxlsx::read.xlsx(xlsxFile = '~/Project/pan_neu/2.analysis/4.merge_analysis/neu/analysis_v9/VEGFA_pos_vs_VEGFA_nag in tumor_DEGs.xlsx', sheet = 2)
+Degs_neu <- Degs_neu %>% filter(avg_log2FC > 0.6 & cluster %in% 'VEGFA_pos' )
+infla_list[[2]] <- Degs_neu$gene
+
+
+PDL1_s <- openxlsx::read.xlsx(xlsxFile = '~/Project/pan_neu/2.analysis/4.merge_analysis/neu/analysis_v9/PDL1_tumor_DEGs.xlsx', sheet = 2)
+PDL1_s <- PDL1_s %>% filter(avg_log2FC > 1 & cluster %in% 'pos' & ratio > 2)
+infla_list[[3]] <- PDL1_s$gene
+
+
+tex_s <- c('TOX', 'TIGIT', 'LAYN', 'LAG3', 'HAVCR2', 
+           'ENTPD1', 'DUSP4', 'CXCL13', 'CTLA4', 
+           'PDCD1', 'TNFRSF9') 
+infla_list[[4]] <- tex_s
+
+
+gmt_dat2 <- getGmt("~/Project/pan_neu/3.code/HALLMARK_EPITHELIAL_MESENCHYMAL_TRANSITION.v2023.2.Hs.gmt")
+infla_list[[5]] <- gmt_dat2[[1]]@geneIds
+
+
+
+CRC_icb <- dir('~/project/pan_neu/Spatial/1_rawdata/CRC_icb')
+CRC_icb <- CRC_icb %>% gsub(pattern = '_matrix_image', replacement = '')
+
+CRC_icb_data <- list()
+
+for (i in 1:length(CRC_icb)) {
+  data_1 <- CRC_icb[i]
+  data.dir = str_glue("~/project/pan_neu/Spatial/1_rawdata/CRC_icb/{data_1}_matrix_image/")
+  
+  spatial_data = Read10X(str_glue("{data.dir}/filtered_feature_bc_matrix/"))
+  image_c1 <- Read10X_Image(image.dir = file.path(data.dir, "spatial"), filter.matrix = TRUE)
+  spatial_data <- CreateSeuratObject(counts = spatial_data, assay = "Spatial")
+  
+  image_c1 <- image_c1[Cells(x = spatial_data)]
+  DefaultAssay(spatial_data = image_c1) <- "Spatial"
+  spatial_data[["slice1"]] <- image_c1
+  
+  spatial_data <- SCTransform(spatial_data, assay = "Spatial", verbose = FALSE)
+  spatial_data <- RunPCA(spatial_data, assay = "SCT", verbose = FALSE)
+  spatial_data <- FindNeighbors(spatial_data, reduction = "pca", dims = 1:30)
+  spatial_data <- FindClusters(spatial_data, verbose = FALSE)
+  spatial_data <- RunUMAP(spatial_data, reduction = "pca", dims = 1:30)
+  
+  p1 <- DimPlot(spatial_data, reduction = "umap", label = TRUE)
+  p2 <- SpatialDimPlot(spatial_data, label = TRUE, label.size = 3) # alpha = c(0.2, 0.8)
+  ggsave(str_glue('{data_1} DimPlot v1.png'), p1+p2, height  = 7, width = 15, bg = 'white',limitsize = FALSE, dpi = 300)
+  
+  p1 <- SpatialFeaturePlot(spatial_data, features = c('nCount_Spatial', 'nFeature_Spatial'),
+                           ncol = 2, alpha = c(0.1, 1))
+  ggsave(str_glue('{data_1} QC v1.png'), p1, height  = 7, width = 15, bg = 'white',limitsize = FALSE, dpi = 300)
+  
+  p1 <- SpatialFeaturePlot(spatial_data, features = c('PTPRC', 'CD3E', 'NKG7', "FCGR3B", 'CD19', 'IGHG1', 'EPCAM', 'PECAM1', 'COL1A1'),
+                           ncol = 3, alpha = c(0.1, 1))
+  ggsave(str_glue('{data_1} features v1.png'), p1, height  = 15, width = 15, bg = 'white',limitsize = FALSE, dpi = 300)
+  
+  spatial_data <- AddModuleScore(spatial_data, features = infla_list)
+  colnames(spatial_data@meta.data)[(ncol(spatial_data@meta.data)-7):ncol(spatial_data@meta.data)] <- names(infla_list)
+  p1 <- SpatialFeaturePlot(spatial_data, features = names(infla_list),ncol = 3, alpha = c(0.1, 1))
+  ggsave(str_glue('{data_1} module v1.png'), p1, height  = 15, width = 15, bg = 'white',limitsize = FALSE, dpi = 300)
+  
+  CRC_icb_data[[i]] <- spatial_data
+  names(CRC_icb_data)[i] <- data_1
+  
+  print(str_glue('{data_1}  is OK !!!'))
+}
+
+save(CRC_icb_data, file = '~/Project/pan_neu/2.analysis/4.merge_analysis/neu/Spatial/2.analysis/CRC_icb/CRC_icb_data.RData')
+
+
